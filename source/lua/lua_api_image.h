@@ -54,6 +54,8 @@ namespace LuaAPI {
 		static LuaImage composeItemGrid(int width, int height, sol::table entries);
 		// Edge cost (0 = similar, 1 = dissimilar); -1 means insufficient data.
 		static double edgeCost(int leftOrTopItemId, int rightOrBottomItemId, const std::string &direction);
+		// Greedy cached-edge arrangement for a complete grid of server item IDs.
+		static sol::table autoArrange(sol::this_state ts, sol::table ids, int width, int height);
 
 		// Properties
 		int getWidth() const;
