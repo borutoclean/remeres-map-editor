@@ -58,7 +58,14 @@ local placeable = {}
 local hasBad = false
 local noImage = 0
 for id = from, to do
-    local picture = isClient and Image.fromSprite(id) or Image.fromItemSprite(id)
+    local picture
+    if isClient then
+        picture = Image.fromSprite(id)
+    elseif id <= Items.getMaxId() and Items.exists(id) then
+        picture = Image.fromItemSprite(id)
+    else
+        picture = Image() -- unknown server ID; show an empty gallery cell
+    end
     local label = tostring(id)
     local tooltip = ""
     if isClient then
