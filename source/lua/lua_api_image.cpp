@@ -247,6 +247,144 @@ namespace LuaAPI {
 		return wxBitmap(scaled);
 	}
 
+
+	// Composite actual SERVER ITEM appearances. Wide/tall sprites use Tibia's
+	// bottom-right tile anchoring; x,y are tile offsets inside the preview.
+	LuaImage LuaImage::composeItemGrid(int width, int height, sol::table entries) {
+		if (width < 1 || height < 1 || width > 40 || height > 40) {
+			throw sol::error("Preview dimensions must be between 1 and 40 SQM");
+		}
+		if (entries.size() > 320) {
+			throw sol::error("Too many sprite placements for preview");
+		}
+		struct Placement {
+			int itemId;
+			int x;
+			int y;
+			int order;
+		};
+		std::vector<Placement> placements;
+		placements.reserve(entries.size());
+		int index = 0;
+		for (auto &pair : entries) {
+			if (!pair.second.is<sol::table>()) {
+				throw sol::error("Each preview entry must be {id,x,y}");
+			}
+			sol::table e = pair.second.as<sol::table>();
+			int id = e.get_or("id", 0);
+			int x = e.get_or("x", -1);
+			int y = e.get_or("y", -1);
+			if (id < 1 || id > g_items.getMaxID() || g_items[id].id == 0 ||
+				x < 0 || y < 0 || x >= width || y >= height) {
+				throw sol::error("Invalid item ID or preview position");
+			}
+			placements.push_back({id, x, y, index++});
+		}
+		std::stable_sort(placements.begin(), placements.end(),
+			[](const Placement &a, const Placement &b) {
+				if (a.y != b.y) return a.y < b.y;
+				if (a.x != b.x) return a.x < b.x;
+				return a.order < b.order;
+			});
+
+		const int outWidth = width * 32;
+		const int outHeight = height * 32;
+		LuaImage result;
+		if (!result.image.Create(outWidth, outHeight)) {
+			throw sol::error("Cannot allocate structure preview");
+		}
+		unsigned char* dst = result.image.GetData();
+		for (int y = 0; y < outHeight; ++y) {
+			for (int x = 0; x < outWidth; ++x) {
+				int cell = ((x / 16) + (y / 16)) & 1;
+				unsigned char base = cell ? 205 : 229;
+				size_t offset = (static_cast<size_t>(y) * outWidth + x) * 3;
+				dst[offset] = base;
+				dst[offset + 1] = base;
+				dst[offset + 2] = base;
+			}
+		}
+		for (const auto &p : placements) {
+			LuaImage sprite = LuaImage::loadFromItemSprite(p.itemId);
+			if (!sprite.isValid()) continue;
+			const wxImage &source = sprite.getWxImage();
+			const int sw = source.GetWidth();
+			const int sh = source.GetHeight();
+			const unsigned char* rgb = source.GetData();
+			const unsigned char* alpha = source.HasAlpha() ? source.GetAlpha() : nullptr;
+			const int left = (p.x + 1) * 32 - sw;
+			const int top = (p.y + 1) * 32 - sh;
+			for (int sy = 0; sy < sh; ++sy) {
+				int dy = top + sy;
+				if (dy < 0 || dy >= outHeight) continue;
+				for (int sx = 0; sx < sw; ++sx) {
+					int dx = left + sx;
+					if (dx < 0 || dx >= outWidth) continue;
+					const size_t si = static_cast<size_t>(sy) * sw + sx;
+					const int a = alpha ? alpha[si] : 255;
+					if (a == 0) continue;
+					const size_t di = (static_cast<size_t>(dy) * outWidth + dx) * 3;
+					for (int c = 0; c < 3; ++c) {
+						dst[di + c] = static_cast<unsigned char>(
+							(rgb[si * 3 + c] * a + dst[di + c] * (255 - a) + 127) / 255
+						);
+					}
+				}
+			}
+		}
+		return result;
+	}
+
+	double LuaImage::edgeCost(int firstId, int secondId, const std::string &direction) {
+		if (direction != "right" && direction != "down") {
+			throw sol::error("Edge direction must be 'right' or 'down'");
+		}
+		if (firstId < 1 || secondId < 1 || firstId > g_items.getMaxID() ||
+			secondId > g_items.getMaxID() ||
+			g_items[firstId].id == 0 || g_items[secondId].id == 0) {
+			return -1.0;
+		}
+		LuaImage a = LuaImage::loadFromItemSprite(firstId);
+		LuaImage b = LuaImage::loadFromItemSprite(secondId);
+		if (!a.isValid() || !b.isValid() ||
+			a.getWidth() != 32 || a.getHeight() != 32 ||
+			b.getWidth() != 32 || b.getHeight() != 32) {
+			return -1.0; // Do not match whole large sprites as separate SQMs.
+		}
+		const wxImage &ia = a.getWxImage();
+		const wxImage &ib = b.getWxImage();
+		const unsigned char* ra = ia.GetData();
+		const unsigned char* rb = ib.GetData();
+		const unsigned char* aa = ia.HasAlpha() ? ia.GetAlpha() : nullptr;
+		const unsigned char* ab = ib.HasAlpha() ? ib.GetAlpha() : nullptr;
+		double total = 0.0;
+		int samples = 0;
+		for (int k = 0; k < 32; ++k) {
+			int ax = direction == "right" ? 31 : k;
+			int ay = direction == "right" ? k : 31;
+			int bx = direction == "right" ? 0 : k;
+			int by = direction == "right" ? k : 0;
+			int ai = ay * 32 + ax;
+			int bi = by * 32 + bx;
+			int alphaA = aa ? aa[ai] : 255;
+			int alphaB = ab ? ab[bi] : 255;
+			if (alphaA < 24 && alphaB < 24) continue;
+			++samples;
+			if (alphaA < 24 || alphaB < 24) {
+				total += 0.8;
+				continue;
+			}
+			int diff = 0;
+			for (int c = 0; c < 3; ++c)
+				diff += std::abs(static_cast<int>(ra[ai * 3 + c]) -
+					static_cast<int>(rb[bi * 3 + c]));
+			total += (static_cast<double>(diff) / 765.0) +
+				(static_cast<double>(std::abs(alphaA - alphaB)) / 255.0) * 0.2;
+		}
+		if (samples < 6) return -1.0;
+		return total / samples;
+	}
+
 	bool LuaImage::operator==(const LuaImage &other) const {
 		// Compare by path if file-based, or sprite ID if sprite-based
 		if (spriteSource && other.spriteSource) {
@@ -292,6 +430,8 @@ namespace LuaAPI {
 			"fromFile", &LuaImage::loadFromFile,
 			"fromItemSprite", &LuaImage::loadFromItemSprite,
 			"fromSprite", &LuaImage::loadFromSprite,
+			"composeItems", &LuaImage::composeItemGrid,
+			"edgeCost", &LuaImage::edgeCost,
 
 			// Properties (read-only)
 			"width", sol::property(&LuaImage::getWidth),
