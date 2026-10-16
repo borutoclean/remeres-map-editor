@@ -73,41 +73,13 @@ local function arrange(ids, width, height, mode)
         error("A area e menor que a lista de IDs: " .. #ids .. " > " .. (width * height))
     end
     if mode == "Edge heuristic" then
-        if #ids ~= width * height or #ids > 49 then
-            error("Modo de bordas requer grade completa e no maximo 49 IDs.")
+        if #ids ~= width * height then
+            error("Heuristica requer grade completa (uma peca por SQM).")
         end
-        local remaining = {}
-        for i = 1, #ids do remaining[i] = ids[i] end
-        local used = 0
-        for y = 0, height - 1 do
-            for x = 0, width - 1 do
-                local bestIndex = 1
-                local bestScore = math.huge
-                for j, id in ipairs(remaining) do
-                    local cost, comparisons = 0, 0
-                    if x > 0 then
-                        local neighbour = entries[#entries].id
-                        local value = Image.edgeCost(neighbour, id, "right")
-                        if value >= 0 then cost = cost + value; comparisons = comparisons + 1 end
-                    end
-                    if y > 0 then
-                        local neighbour = entries[y * width + x + 1 - width].id
-                        local value = Image.edgeCost(neighbour, id, "down")
-                        if value >= 0 then cost = cost + value; comparisons = comparisons + 1 end
-                    end
-                    if comparisons > 0 then
-                        local score = cost / comparisons + (2 - comparisons) * 0.05
-                        if score < bestScore then bestScore = score; bestIndex = j end
-                    elseif bestScore == math.huge then
-                        bestIndex = 1
-                    end
-                end
-                local id = table.remove(remaining, bestIndex)
-                entries[#entries + 1] = { id = id, x = x, y = y }
-                used = used + 1
-            end
-        end
-        return entries
+        local result = Image.autoArrange(ids, width, height)
+        print(string.format("[Structure Composer] Auto-arrangement: %d seams compared; avg cost %.3f; %d images unavailable/non-32px",
+            result.matchedEdges, result.averageCost, result.unsupportedSprites))
+        return result.entries
     end
 
     for i, id in ipairs(ids) do
@@ -231,7 +203,7 @@ dlg:number({ id = "y", label = "Mapa Y:", value = 1000, min = 0, max = 65535 })
 dlg:number({ id = "z", label = "Mapa Z:", value = 7, min = 0, max = 15 })
 dlg:check({ id = "preserve", text = "Bloquear montagem se houver colisao (recomendado)", selected = true })
 dlg:label({ text = "Rotacao transforma POSICOES, nao gira o desenho dos itens." })
-dlg:label({ text = "Heuristica de bordas so funciona para sprites individuais de 32x32." })
+dlg:label({ text = "Heuristica avalia ate 220 pecas, mas so compara bordas 32x32." })
 dlg:separator()
 local submitted = false
 dlg:button({ id = "next", text = "Visualizar", focus = true,
@@ -293,8 +265,8 @@ confirm:label({ text = string.format("%d pecas, %d SQMs, %dx%d. Preview aproxima
 confirm:image({
     id = "preview",
     image = preview,
-    width = math.min(width * 32, 620),
-    height = math.min(height * 32, 440),
+    width = math.max(1, math.floor(width * 32 * math.min(1, 620 / (width * 32), 440 / (height * 32)))),
+    height = math.max(1, math.floor(height * 32 * math.min(1, 620 / (width * 32), 440 / (height * 32)))),
     smooth = false,
 })
 confirm:label({ text = "Mapa de ocupacao (# = contem item):" })
