@@ -410,7 +410,7 @@ namespace LuaAPI {
 		std::vector<Signature> available;
 		available.reserve(n);
 		for (int i = 1; i <= n; ++i) {
-			int id = ids[i].get_or(0);
+			int id = ids.get_or(i, 0);
 			if (id < 1 || id > g_items.getMaxID() || g_items[id].id == 0) {
 				throw sol::error("Unknown server item ID in edge arrangement");
 			}
