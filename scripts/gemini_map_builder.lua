@@ -204,7 +204,10 @@ local function validatePlan(plan, x0, y0, z, width, height, allowed, infos, pres
         for _, id in ipairs(objects) do ordered[#ordered + 1] = id end
         local x, y = x0 + entry.x, y0 + entry.y
         local existing = map:getTile(x, y, z)
-        local occupied = existing and (existing.hasGround or existing.itemCount > 0)
+        -- A ground-only tile may receive objects without replacing its ground.
+        -- Preserve mode rejects decorated tiles and ground replacements.
+        local occupied = existing and (existing.itemCount > 0
+            or (hasNewGround and existing.hasGround))
         if preserve and occupied then
             skipped = skipped + 1
         else
@@ -305,12 +308,32 @@ for _, id in ipairs(ids) do
         info.isGroundTile and "ground" or "objeto")
 end
 
+local rows = {}
+for ry = 0, height - 1 do
+    local cells = {}
+    for rx = 0, width - 1 do
+        local tile = app.map:getTile(x0 + rx, y0 + ry, z)
+        local cell = "."
+        if tile then
+            if tile.itemCount > 0 then cell = "X"
+            elseif tile.hasGround then cell = "g" end
+        end
+        cells[#cells + 1] = cell
+    end
+    rows[#rows + 1] = table.concat(cells)
+end
+
 local prompt = table.concat({
     "Voce e um planejador de tiles para Remere's Map Editor (Tibia).",
     "Produza APENAS JSON valido, sem explicacoes ou markdown.",
     'Formato exato: {"tiles":[{"x":0,"y":0,"items":[100,200]}]}',
     "x e y sao offsets inteiros comecando em 0. Nao envie coordenadas absolutas nem z.",
     "Area: largura " .. width .. ", altura " .. height .. ". Piso z=" .. z .. ".",
+    "Estado atual (linhas y=0..altura-1, colunas x=0..largura-1):",
+    "Legenda: . = tile vazio; g = so piso; X = contem objetos.",
+    table.concat(rows, "\n"),
+    data.preserve and "Modo preservacao: NUNCA use X; em g so adicione objetos, sem criar ground." or
+        "Modo de edicao: objetos preexistentes sao mantidos; ground novo substitui o anterior.",
     "Use SOMENTE os IDs da lista. Maximo " .. MAX_TILES
         .. " tiles, e maximo " .. MAX_ITEMS_PER_TILE .. " itens por tile.",
     "Quando gerar piso, informe o ground antes dos objetos e nao use mais de um ground por tile.",
@@ -373,6 +396,6 @@ app.refresh()
 app.setCameraPosition(x0 + math.floor(width / 2), y0 + math.floor(height / 2), z)
 app.alert({
     title = "Gemini Map Builder",
-    text = #placements .. " tiles aplicados. Use Ctrl+Z para desfazer.",
+    text = #placements .. " tiles aplicados. Use Ctrl+Z para desfazer. Salve o mapa se estiver correto.",
     buttons = { "OK" },
 })
