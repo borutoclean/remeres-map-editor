@@ -21,8 +21,6 @@
 #include <sol/sol.hpp>
 #include <wx/image.h>
 #include <wx/bitmap.h>
-#include <tuple>
-#include <vector>
 
 namespace LuaAPI {
 
@@ -53,7 +51,9 @@ namespace LuaAPI {
 		static LuaImage loadFromSprite(int spriteId);
 		// Compose a checkerboard-backed preview using actual item appearances.
 		// Each entry is (item id, x offset, y offset), anchored to its tile.
-		static LuaImage composeItemGrid(int width, int height, const std::vector<std::tuple<int, int, int>> &entries);
+		static LuaImage composeItemGrid(int width, int height, sol::table entries);
+		// Edge cost (0 = similar, 1 = dissimilar); -1 means insufficient data.
+		static double edgeCost(int leftOrTopItemId, int rightOrBottomItemId, const std::string &direction);
 
 		// Properties
 		int getWidth() const;
