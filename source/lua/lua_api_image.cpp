@@ -22,6 +22,11 @@
 #include "../items.h"
 #include <filesystem>
 #include <print>
+#include <algorithm>
+#include <array>
+#include <vector>
+#include <limits>
+#include <cstdlib>
 #include "lua_script_manager.h"
 
 namespace LuaAPI {
@@ -385,6 +390,132 @@ namespace LuaAPI {
 		return total / samples;
 	}
 
+
+	// Cache each sprite's four RGBA border signatures once, then compare
+	// candidates in-memory. This permits up to 220 pieces without making
+	// tens of thousands of separate sprite-rendering calls.
+	sol::table LuaImage::autoArrange(sol::this_state ts, sol::table ids, int width, int height) {
+		sol::state_view lua(ts);
+		const int n = static_cast<int>(ids.size());
+		if (width < 1 || height < 1 || width > 40 || height > 40 ||
+			n < 1 || n > 220 || width * height != n) {
+			throw sol::error("Edge arrangement expects a full grid of 1-220 tiles");
+		}
+		struct Signature {
+			int id;
+			bool valid = false;
+			// top, right, bottom, left; RGBA per pixel
+			std::array<std::array<std::array<unsigned char, 4>, 32>, 4> edge{};
+		};
+		std::vector<Signature> available;
+		available.reserve(n);
+		for (int i = 1; i <= n; ++i) {
+			int id = ids[i].get_or(0);
+			if (id < 1 || id > g_items.getMaxID() || g_items[id].id == 0) {
+				throw sol::error("Unknown server item ID in edge arrangement");
+			}
+			Signature signature;
+			signature.id = id;
+			LuaImage sprite = LuaImage::loadFromItemSprite(id);
+			if (sprite.isValid() && sprite.getWidth() == 32 && sprite.getHeight() == 32) {
+				const wxImage &pic = sprite.getWxImage();
+				const unsigned char* rgb = pic.GetData();
+				const unsigned char* alpha = pic.HasAlpha() ? pic.GetAlpha() : nullptr;
+				for (int dir = 0; dir < 4; ++dir) {
+					for (int k = 0; k < 32; ++k) {
+						int x = dir == 1 ? 31 : dir == 3 ? 0 : k;
+						int y = dir == 2 ? 31 : dir == 0 ? 0 : k;
+						int p = y * 32 + x;
+						for (int c = 0; c < 3; ++c)
+							signature.edge[dir][k][c] = rgb[p * 3 + c];
+						signature.edge[dir][k][3] = alpha ? alpha[p] : 255;
+					}
+				}
+				signature.valid = true;
+			}
+			available.push_back(signature);
+		}
+		auto compare = [](const Signature &a, int sideA,
+				const Signature &b, int sideB) -> double {
+			if (!a.valid || !b.valid) return -1.0;
+			double difference = 0.0;
+			int active = 0;
+			for (int k = 0; k < 32; ++k) {
+				const auto &p = a.edge[sideA][k];
+				const auto &q = b.edge[sideB][k];
+				if (p[3] < 24 && q[3] < 24) continue;
+				++active;
+				if (p[3] < 24 || q[3] < 24) {
+					difference += 0.8;
+					continue;
+				}
+				double delta = 0.0;
+				for (int c = 0; c < 3; ++c)
+					delta += std::abs(static_cast<int>(p[c]) -
+						static_cast<int>(q[c]));
+				difference += (delta / 765.0) +
+					std::abs(static_cast<int>(p[3]) - static_cast<int>(q[3])) / 1275.0;
+			}
+			return active < 6 ? -1.0 : difference / active;
+		};
+
+		std::vector<Signature> placed;
+		placed.reserve(n);
+		double totalCost = 0.0;
+		int matchedEdges = 0;
+		for (int idx = 0; idx < n; ++idx) {
+			int x = idx % width;
+			int y = idx / width;
+			int chosen = 0;
+			double best = std::numeric_limits<double>::infinity();
+			for (int j = 0; j < static_cast<int>(available.size()); ++j) {
+				double score = 0.0;
+				int neighbours = 0;
+				if (x > 0) {
+					double cost = compare(placed[idx - 1], 1, available[j], 3);
+					if (cost >= 0) { score += cost; ++neighbours; }
+				}
+				if (y > 0) {
+					double cost = compare(placed[idx - width], 2, available[j], 0);
+					if (cost >= 0) { score += cost; ++neighbours; }
+				}
+				if (neighbours > 0) {
+					score = score / neighbours + (2 - neighbours) * 0.05;
+					if (score < best) { best = score; chosen = j; }
+				} else if (best == std::numeric_limits<double>::infinity()) {
+					chosen = 0; // unchanged ID order if evidence is insufficient
+				}
+			}
+			Signature selected = available[chosen];
+			available.erase(available.begin() + chosen);
+			if (x > 0) {
+				double c = compare(placed[idx - 1], 1, selected, 3);
+				if (c >= 0) { totalCost += c; ++matchedEdges; }
+			}
+			if (y > 0) {
+				double c = compare(placed[idx - width], 2, selected, 0);
+				if (c >= 0) { totalCost += c; ++matchedEdges; }
+			}
+			placed.push_back(selected);
+		}
+		sol::table result = lua.create_table();
+		sol::table entries = lua.create_table(n, 0);
+		int invalidSprites = 0;
+		for (int i = 0; i < n; ++i) {
+			sol::table piece = lua.create_table();
+			piece["id"] = placed[i].id;
+			piece["x"] = i % width;
+			piece["y"] = i / width;
+			entries[i + 1] = piece;
+			if (!placed[i].valid) ++invalidSprites;
+		}
+		result["entries"] = entries;
+		result["matchedEdges"] = matchedEdges;
+		result["averageCost"] = matchedEdges > 0 ? totalCost / matchedEdges : -1.0;
+		result["unsupportedSprites"] = invalidSprites;
+		return result;
+	}
+
 	bool LuaImage::operator==(const LuaImage &other) const {
 		// Compare by path if file-based, or sprite ID if sprite-based
 		if (spriteSource && other.spriteSource) {
@@ -432,6 +563,7 @@ namespace LuaAPI {
 			"fromSprite", &LuaImage::loadFromSprite,
 			"composeItems", &LuaImage::composeItemGrid,
 			"edgeCost", &LuaImage::edgeCost,
+			"autoArrange", &LuaImage::autoArrange,
 
 			// Properties (read-only)
 			"width", sol::property(&LuaImage::getWidth),
