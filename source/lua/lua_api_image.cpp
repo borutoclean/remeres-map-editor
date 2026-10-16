@@ -159,8 +159,10 @@ namespace LuaAPI {
 		}
 
 		auto* gameSprite = dynamic_cast<GameSprite*>(sprite);
-		if (gameSprite && gameSprite->width > 0 && gameSprite->height > 0) {
-			// Fallback: use DC-based rendering
+		if (!gameSprite || gameSprite->width <= 0 || gameSprite->height <= 0) {
+			// Only non-GameSprite assets fall back to DC; valid game sprites
+			// must retain their original WxH pixel dimensions and alpha.
+			// This also avoids dereferencing a null gameSprite below.
 			wxBitmap bmp(32, 32, 32);
 			wxMemoryDC dc(bmp);
 			dc.SetBackground(*wxWHITE_BRUSH);
